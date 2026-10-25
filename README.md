@@ -16,6 +16,10 @@ model's MXFP4 expert scales into the CSF container format the vLLM
 
 - Weights: [XiaomiMiMo/MiMo-V2.6-Pro-MOPD](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-MOPD) (public, ~534 GiB, includes the `dflash/` draft model)
 - Serving image: `ghcr.io/tunamitom/kk-mimo-pro` — vLLM with the MiMo MXFP4-CSF loader
+- FLARE runtime (no CSF container, no vLLM): prepared package
+  [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE)
+  and image `ghcr.io/tunamitom/mimo-pro-flare` — see
+  [FLARE runtime](#flare-runtime) below
 
 ## Requirements
 
@@ -134,6 +138,130 @@ curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/
 
 The first start loads and compiles for quite a while — the first successful
 chat completion is the signal it's ready.
+
+## FLARE runtime
+
+[FLARE](https://github.com/NVIDIA/flare-local-inference) is the Rust serving
+engine from the same people. It does not read the MXFP4-CSF container and does
+not use vLLM: it serves a **prepared runtime package** — one metadata-only
+primary `.safetensors` plus immutable payload blobs — with its own paged-KV
+scheduler, DFlash draft, prefix cache and HTTP server. Steps 1–3 above do not
+apply on this path: nothing is encoded, and there is no `--load-format`.
+
+| | |
+|---|---|
+| Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 583.5 GB (544 GiB), 28 safetensors (primary: `model.safetensors`) |
+| Image | `ghcr.io/tunamitom/mimo-pro-flare:rt-mimo-pro-sw-0012bc12` — digest `sha256:d7ae6cca84d6de62f52276b35c595419a01692c3a24d59c5768a7df0173fadbb` |
+| Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`666fce09`) |
+
+### Option A — download the prepared package
+
+```bash
+pip install -U "huggingface_hub[cli]"
+hf download mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE \
+  --local-dir MiMo-V2.6-Pro-MOPD-FLARE
+```
+
+583.5 GB (544 GiB) across 28 files (also fetches `README.md`, `LICENSE`,
+`publisher.json`, `.gitattributes`). Serve `MiMo-V2.6-Pro-MOPD-FLARE/model.safetensors`.
+
+If you would rather keep everything in the Hub cache, FLARE can resolve the
+same reference itself: `run mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE@gb202
+--filename model.safetensors --cache-dir /cache`. The trust flags below still
+apply.
+
+### Option B — build the package from source
+
+Build environment: Rust, Python 3.12, CMake, Ninja, `protoc`, OpenSSL and
+Python headers, liburing, plus the CUDA toolkit (`nvcc`, CUPTI).
+
+```bash
+git clone -b mimo-pro https://github.com/tunamitom/flare-local-inference.git
+cd flare-local-inference
+uv sync --locked --extra prepare --extra test
+cargo build --release --manifest-path flare/Cargo.toml
+```
+
+Then convert the checkpoint (the same one the CSF path downloads) into a
+signed runtime package. The `mimo-v2.6-pro-mopd` alias prepares text, images
+and seven DFlash draft tokens with adaptive verification; audio is not
+prepared.
+
+```bash
+hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD --local-dir MiMo-V2.6-Pro-MOPD
+
+.venv/bin/python -m ignition export mimo-v2.6-pro-mopd \
+  --gpus 0,1,2,3,4,5,6,7 \
+  --max-concurrency 64 --mtp-draft-tokens 7 --prefill-chunk-size 4096 \
+  --output /data/flare-runtime/mimo-pro-tp8-c64-dflash7.safetensors --verbose
+```
+
+Export needs the same 8 GPUs and writes the primary plus its payload blobs
+beside it (~544 GiB more on top of the source checkpoint). A self-built package
+is signed with your own per-user development key; the first run prints that
+fingerprint and refuses until you accept it (or pass the two `--dangerously-*`
+flags with your own values). Serve the primary either with
+`./flare/target/release/flare run …` or with the image below.
+
+### Serve
+
+```bash
+docker run -d --name mimo-pro \
+  --gpus all --network host \
+  --user "$(id -u):$(id -g)" \
+  --ulimit memlock=-1:-1 --ulimit nofile=1048576:1048576 \
+  -e CUDA_DEVICE_ORDER=PCI_BUS_ID \
+  -v $PWD/MiMo-V2.6-Pro-MOPD-FLARE:/model:ro \
+  -v $PWD/flare-state:/state \
+  ghcr.io/tunamitom/mimo-pro-flare:rt-mimo-pro-sw-0012bc12 \
+  run /model/model.safetensors \
+    --gpus 0,1,2,3,4,5,6,7 \
+    --max-concurrency 64 \
+    --mtp-draft-tokens 7 --mtp-adaptive-verification \
+    --scheduler-policy throughput \
+    --min-checkpoint-segment 256 \
+    --kv-cache-limit memory \
+    --prefix-cache-memory 64G \
+    --served-model-name mimo-pro \
+    --publisher-keys /model/publisher.json \
+    --trust-store /state/trust.toml \
+    --dangerously-approve-key 26f0c9bfe3121de285240d0f00369602eb9409e00c1f405ed161e06f57d593dd \
+    --dangerously-accept-publisher local-development \
+    --host 0.0.0.0 --port 8000
+```
+
+The published package is signed by a **development** key (namespace
+`local-development`), not a production one — those two flags accept exactly
+that key, once, and record it in `/state/trust.toml`. Check the fingerprint
+against `publisher.json` in the repo before you accept it.
+
+### Check
+
+```bash
+curl -sf http://127.0.0.1:8000/health          # 200 = ready
+curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "mimo-pro",
+  "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+
+### Notes
+
+- The image runs as uid `10001` (`flare`). With bind mounts owned by your user
+  you need `--user "$(id -u):$(id -g)"`; without it `flare` fails with
+  `Permission denied` on `/state` or the package directory.
+- `--ulimit memlock=-1:-1` matters: the engine locks host memory for its
+  caches and would otherwise fail to raise the limit.
+- `--prefix-cache-memory 64G` is the host-RAM tier and optional. Adding
+  `--prefix-cache-disk /prefix-cache --prefix-cache-disk-limit 160G` needs an
+  io_uring-enabled seccomp profile — Docker's default profile blocks
+  `io_uring_setup`, and the server dies at startup with it.
+- First start takes several minutes (543 GiB of weights off disk); `/health`
+  returning 200 is the readiness signal, not the port opening.
+- `--max-concurrency 64` and the seven draft tokens are what the published
+  package was exported for. Changing them needs a re-export.
+- `--min-checkpoint-segment 256` lets short messages share the next prefill
+  pass instead of stopping for a checkpoint at every message end.
 
 ## Toolkit reference
 
