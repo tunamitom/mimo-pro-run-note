@@ -20,9 +20,12 @@ first one is the one to use:
    plus immutable payload blobs, its own paged-KV scheduler, DFlash draft
    widths 1–8 with adaptive verification, prefix cache and HTTP server. No
    Python, no runtime compilation, no CSF container. Faster than the vLLM path
-   on the same hardware — measured on 8× RTX PRO 6000 (30 s cells): **260 tok/s**
-   single stream, **682 tok/s** at 8-way, **880 tok/s** at 16-way aggregate
-   decode, prefill ~8.6k tok/s at 8k context.
+   on the same hardware, and how fast depends on what you ask it to write: at
+   128k context a maths derivation sustains **420 tok/s**, code **370–400**,
+   agent traces **283**, open-ended writing **210** — see
+   [Measured performance](#measured-performance). Aggregate decode (30 s
+   cells): **260 tok/s** single stream, **682** at 8-way, **880** at 16-way,
+   prefill ~8.6k tok/s at 8k context.
 2. **vLLM + MXFP4-CSF (alternative)** — the original recipe: encode the model's
    MXFP4 expert scales into the CSF container format and serve with the vLLM
    `mxfp4_csf` loader. Kept below for reproducibility and for the CSF toolkit.
@@ -56,6 +59,35 @@ no `--load-format`.
 | Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 576.7 GB (537 GiB), 601 safetensors files (primary manifest `model.safetensors`, payloads under `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`) |
 | Image | `ghcr.io/tunamitom/mimo-pro-flare:74eabe8f` — digest `sha256:6b0fedd4d5ef04e62ea8ab36af96b5448ba5beb79f435103480759a0eae5111c` |
 | Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`74eabe8f`) — the export recipe lives in the branch under `packaging/mimo-pro/` |
+
+### Measured performance
+
+![MiMo-V2.6-Pro-MOPD on FLARE — prefill, aggregate decode, and acceptance by category at 128k context](docs/bench-20261027.png)
+
+Speculative acceptance sets decode speed, and acceptance depends on what the
+model is writing far more than on how deep the context is. Means over 3–4
+prompts per category, one 1,500-token request each, all at 128k context:
+
+| category | n | accept len | rate | decode tok/s |
+|---|---|---|---|---|
+| math | 4 | 5.50 | 0.74 | 420.1 |
+| python | 3 | 5.26 | 0.72 | 399.8 |
+| go | 3 | 5.22 | 0.71 | 397.2 |
+| cpp | 3 | 4.96 | 0.69 | 381.0 |
+| typescript | 3 | 4.83 | 0.67 | 370.2 |
+| agent | 3 | 3.39 | 0.57 | 283.0 |
+| writing | 4 | 2.33 | 0.43 | 209.6 |
+
+The language barely matters: the spread inside one language (4.10–5.97) is wider
+than the spread between languages. Agent traces sit between code and prose —
+tool-call JSON is predictable, the reasoning between the calls is not. Creative
+writing is the floor, at 2.3 accepted tokens per round, and it is the only
+category whose best prompt still loses to the worst code prompt.
+
+Prefill: 8,576 tok/s at 8k, 8,033 at 64k, 7,129 at 128k. Aggregate decode with
+the 30 s-cell method: 260 tok/s at one stream, 682 at eight, 880 at sixteen.
+The 260 figure is not a ceiling for interactive traffic — it is what that bench
+prompt (an encyclopaedia article, 2.87 accepted per round) produces.
 
 ### Option 1 — build from source (preferred)
 
