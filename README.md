@@ -67,8 +67,13 @@ PCIe, tensor parallel 8, no NVLink.
 ```bash
 git clone -b mimo-pro https://github.com/tunamitom/flare-local-inference.git
 cd flare-local-inference
+git checkout 74eabe8f          # the commit the published package was exported from
 packaging/mimo-pro/setup-venv.sh
 ```
+
+Needs `uv` and Python 3.12 on `PATH` (the script creates `.venv` at the repo
+root); branch `mimo-pro` already points at `74eabe8f` today — check it out
+explicitly if you want a byte-identical rebuild.
 
 `setup-venv.sh` runs `uv sync --frozen --extra prepare` (FlashInfer pinned at
 `344e4837` in `uv.lock`) and then applies the five b12x patches in `patches/`
