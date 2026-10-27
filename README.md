@@ -57,8 +57,8 @@ no `--load-format`.
 | | |
 |---|---|
 | Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 576.7 GB (537 GiB), 601 safetensors files (primary manifest `model.safetensors`, payloads under `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`) |
-| Image | `ghcr.io/tunamitom/mimo-pro-flare:74eabe8f` — digest `sha256:6b0fedd4d5ef04e62ea8ab36af96b5448ba5beb79f435103480759a0eae5111c` |
-| Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`74eabe8f`) — the export recipe lives in the branch under `packaging/mimo-pro/` |
+| Image | `ghcr.io/tunamitom/mimo-pro-flare:018377f5` — digest `sha256:91bed803bc0bf1d9522adc08547884b9dce1fc467b056555b8633eccc7d03a57` |
+| Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`b278aacf`) — the export recipe lives in the branch under `packaging/mimo-pro/` |
 
 ### Measured performance
 
@@ -100,14 +100,14 @@ PCIe, tensor parallel 8, no NVLink.
 # 1. the mimo-pro branch of the engine fork (-b selects it; nothing else does)
 git clone -b mimo-pro https://github.com/tunamitom/flare-local-inference.git
 cd flare-local-inference
-git checkout 74eabe8f        # the commit the published package was exported from
+git checkout b278aacf        # the commit the published package was exported from
 
 # 2. the export environment (packaging/mimo-pro/ is a directory in that branch, not a branch)
 packaging/mimo-pro/setup-venv.sh
 ```
 
 Needs `uv` and Python 3.12 on `PATH` (the script creates `.venv` at the repo
-root); branch `mimo-pro` already points at `74eabe8f` today — check it out
+root); branch `mimo-pro` already points at `b278aacf` today — check it out
 explicitly if you want a byte-identical rebuild.
 
 `setup-venv.sh` runs `uv sync --frozen --extra prepare` (FlashInfer pinned at
@@ -167,7 +167,7 @@ layout intact: `model.safetensors` is the manifest, payloads live under
 `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`. Serve
 `MiMo-V2.6-Pro-MOPD-FLARE/model.safetensors`. It is signed by the
 **development** key in `publisher.json`, and it needs the matching engine image
-(`:74eabe8f`) — the ABI changes between engine builds.
+(`:018377f5`) — the ABI changes between engine builds.
 
 If you would rather keep everything in the Hub cache, FLARE can resolve the
 same reference itself: `run mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE@gb202
@@ -206,7 +206,7 @@ docker run -d --name mimo-pro \
   -v $PWD/MiMo-V2.6-Pro-MOPD-FLARE:/model:ro \
   -v $PWD/flare-state:/state \
   -v $PWD/flare-prefix-cache:/prefix-cache \
-  ghcr.io/tunamitom/mimo-pro-flare:74eabe8f \
+  ghcr.io/tunamitom/mimo-pro-flare:018377f5 \
   run /model/model.safetensors \
     --gpus 0,1,2,3,4,5,6,7 \
     --max-concurrency 64 \
@@ -239,6 +239,55 @@ curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/
   "messages": [{"role": "user", "content": "Hello!"}]
 }'
 ```
+
+### Media inputs
+
+`GET /v1/models` reports `input_modalities: ["text", "image", "audio", "video"]`.
+Images, video and audio can be mixed in one message: their features share one
+arena and are placed in prompt order.
+
+**Images** are `image_url` parts (base64 PNG/JPEG/WebP). The frontend scales to
+the packaged ladder at one token per 32×32 pixels and never upscales beyond
+`max_pixels` (8.39 Mpx). The package admits 32,768 feature positions per
+request, so a full-screen page is encoded natively rather than downscaled:
+
+| image | image tokens |
+|---|---|
+| 1400×900 page scan | 1,232 |
+| 2160×2268 portrait screen | 4,828 |
+| 3000×2000 screenshot | 5,828 |
+| 3840×2160 4K frame | 8,160 |
+
+**Video** is a `video_url` data URL (`data:video/mp4;base64,…`); remote URLs are
+refused. The clip is sampled to 32 frames whatever its source rate, each frame
+is sized under `min(total_max_pixels × 2 / frames, max_pixels)` at the 32-pixel
+patch×merge factor, and two frames form one temporal patch. Prompt cost is
+`ceil(frames/2) × (H/16) × (W/16) / 4` plus one `MM:SS` label per grid step:
+
+| clip | frames | video tokens |
+|---|---|---|
+| 3 s 640×480 clip | 32 | 1,200 |
+| 30 s 720p screen recording | 32 | 14,080 |
+
+**Audio** is an `input_audio` part (base64 `wav`, `mp3`, `m4a`, `ogg`, `flac`,
+`webm`, `aac`, `opus`). It is resampled to 24 kHz mono and turned into 128-band
+log-mel frames at 100 fps, then encoded at 6.25 tokens per second; 60-second
+segments are prepared, so short notes ride a zero-padded segment. Five seconds
+of speech is about 31 prompt tokens, a five-minute note 1,875. A 5-second clip
+with a short instruction measured 45 prompt tokens end to end.
+
+```bash
+curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "mimo-pro",
+  "messages": [{"role": "user", "content": [
+    {"type": "text", "text": "Transcribe this."},
+    {"type": "input_audio", "input_audio": {"data": "'"$(base64 -w0 voice.wav)"'", "format": "wav"}}
+  ]}]
+}'
+```
+
+Media decoding needs `ffmpeg` and `ffprobe` inside the container; the published
+image ships both.
 
 ### Notes
 
