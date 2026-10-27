@@ -266,8 +266,8 @@ patch×merge factor, and two frames form one temporal patch. Prompt cost is
 
 | clip | frames | video tokens |
 |---|---|---|
-| 3 s 640×480 clip | 32 | 1,200 |
-| 30 s 720p screen recording | 32 | 14,080 |
+| 3 s 640×480 clip | 32 (15 grid steps) | 4,500 |
+| 30 s 720p screen recording | 32 (16 grid steps) | 14,080 |
 
 **Audio** is an `input_audio` part (base64 `wav`, `mp3`, `m4a`, `ogg`, `flac`,
 `webm`, `aac`, `opus`). It is resampled to 24 kHz mono and turned into 128-band
