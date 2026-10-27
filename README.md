@@ -65,9 +65,12 @@ and `flare` trees. Hardware: eight RTX PRO 6000 Blackwell (sm_120, 96 GB) on
 PCIe, tensor parallel 8, no NVLink.
 
 ```bash
+# 1. the mimo-pro branch of the engine fork (-b selects it; nothing else does)
 git clone -b mimo-pro https://github.com/tunamitom/flare-local-inference.git
 cd flare-local-inference
-git checkout 74eabe8f          # the commit the published package was exported from
+git checkout 74eabe8f        # the commit the published package was exported from
+
+# 2. the export environment (packaging/mimo-pro/ is a directory in that branch, not a branch)
 packaging/mimo-pro/setup-venv.sh
 ```
 
