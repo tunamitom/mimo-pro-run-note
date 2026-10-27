@@ -150,9 +150,9 @@ apply on this path: nothing is encoded, and there is no `--load-format`.
 
 | | |
 |---|---|
-| Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 583.5 GB (544 GiB), 28 safetensors (primary: `model.safetensors`) |
-| Image | `ghcr.io/tunamitom/mimo-pro-flare:rt-mimo-pro-sw-0012bc12` — digest `sha256:d7ae6cca84d6de62f52276b35c595419a01692c3a24d59c5768a7df0173fadbb` |
-| Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`666fce09`) |
+| Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 576.7 GB (537 GiB), 601 safetensors files (primary manifest `model.safetensors`, payloads under `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`) |
+| Image | `ghcr.io/tunamitom/mimo-pro-flare:74eabe8f` — digest `sha256:6b0fedd4d5ef04e62ea8ab36af96b5448ba5beb79f435103480759a0eae5111c` |
+| Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`74eabe8f`) |
 
 ### Option A — download the prepared package
 
@@ -162,8 +162,11 @@ hf download mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE \
   --local-dir MiMo-V2.6-Pro-MOPD-FLARE
 ```
 
-583.5 GB (544 GiB) across 28 files (also fetches `README.md`, `LICENSE`,
-`publisher.json`, `.gitattributes`). Serve `MiMo-V2.6-Pro-MOPD-FLARE/model.safetensors`.
+576.7 GB (537 GiB) across 601 safetensors files (the download also fetches
+`README.md`, `LICENSE`, `publisher.json`, `.gitattributes`). Keep the published
+layout intact: `model.safetensors` is the manifest, payloads live under
+`weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`. Serve
+`MiMo-V2.6-Pro-MOPD-FLARE/model.safetensors`.
 
 If you would rather keep everything in the Hub cache, FLARE can resolve the
 same reference itself: `run mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE@gb202
@@ -184,8 +187,8 @@ cargo build --release --manifest-path flare/Cargo.toml
 
 Then convert the checkpoint (the same one the CSF path downloads) into a
 signed runtime package. The `mimo-v2.6-pro-mopd` alias prepares text, images
-and seven DFlash draft tokens with adaptive verification; audio is not
-prepared.
+and DFlash draft widths 1–8 with adaptive verification (the shipped package
+sets seven); audio is not prepared.
 
 ```bash
 hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD --local-dir MiMo-V2.6-Pro-MOPD
@@ -196,8 +199,9 @@ hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD --local-dir MiMo-V2.6-Pro-MOPD
   --output /data/flare-runtime/mimo-pro-tp8-c64-dflash7.safetensors --verbose
 ```
 
-Export needs the same 8 GPUs and writes the primary plus its payload blobs
-beside it (~544 GiB more on top of the source checkpoint). A self-built package
+Export needs the same 8 GPUs and writes the primary manifest plus its payload
+tree (`weights/`, `deployments/`) beside it (~537 GiB more on top of the source
+checkpoint). A self-built package
 is signed with your own per-user development key; the first run prints that
 fingerprint and refuses until you accept it (or pass the two `--dangerously-*`
 flags with your own values). Serve the primary either with
@@ -213,7 +217,7 @@ docker run -d --name mimo-pro \
   -e CUDA_DEVICE_ORDER=PCI_BUS_ID \
   -v $PWD/MiMo-V2.6-Pro-MOPD-FLARE:/model:ro \
   -v $PWD/flare-state:/state \
-  ghcr.io/tunamitom/mimo-pro-flare:rt-mimo-pro-sw-0012bc12 \
+  ghcr.io/tunamitom/mimo-pro-flare:74eabe8f \
   run /model/model.safetensors \
     --gpus 0,1,2,3,4,5,6,7 \
     --max-concurrency 64 \
@@ -256,10 +260,11 @@ curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/
   `--prefix-cache-disk /prefix-cache --prefix-cache-disk-limit 160G` needs an
   io_uring-enabled seccomp profile — Docker's default profile blocks
   `io_uring_setup`, and the server dies at startup with it.
-- First start takes several minutes (543 GiB of weights off disk); `/health`
+- First start takes several minutes (537 GiB of weights off disk); `/health`
   returning 200 is the readiness signal, not the port opening.
-- `--max-concurrency 64` and the seven draft tokens are what the published
-  package was exported for. Changing them needs a re-export.
+- `--max-concurrency 64` is what the published package was exported for; its
+  graph catalog covers draft widths 1–8, so `--mtp-draft-tokens` can move in
+  that range without a re-export. Changing concurrency needs a re-export.
 - `--min-checkpoint-segment 256` lets short messages share the next prefill
   pass instead of stopping for a checkpoint at every message end.
 
