@@ -56,7 +56,7 @@ no `--load-format`.
 
 | | |
 |---|---|
-| Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 576.7 GB (537 GiB), 601 safetensors files (primary manifest `model.safetensors`, payloads under `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`) |
+| Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 586.2 GB (545.9 GiB), 594 package files: 568 weight shards, 25 deployment files and the primary manifest `model.safetensors` (payloads under `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`) |
 | Image | `ghcr.io/tunamitom/mimo-pro-flare:018377f5` — digest `sha256:91bed803bc0bf1d9522adc08547884b9dce1fc467b056555b8633eccc7d03a57` |
 | Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`b278aacf`) — the export recipe lives in the branch under `packaging/mimo-pro/` |
 
