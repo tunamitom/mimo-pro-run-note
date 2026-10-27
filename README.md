@@ -44,20 +44,76 @@ first one is the one to use:
 ## Recommended: FLARE runtime
 
 [FLARE](https://github.com/NVIDIA/flare-local-inference) is NVIDIA's Rust
-serving engine. It does not read the MXFP4-CSF container and does
-not use vLLM: it serves a **prepared runtime package** — one metadata-only
-primary `.safetensors` plus immutable payload blobs — with its own paged-KV
-scheduler, DFlash draft, prefix cache and HTTP server. The CSF steps in the
-alternative path below do not apply here: nothing is encoded, and there is no
-`--load-format`.
+serving engine. It does not read the MXFP4-CSF container and does not use vLLM:
+it serves a **prepared runtime package** — one metadata-only manifest plus
+immutable payload blobs — with its own paged-KV scheduler, DFlash draft widths
+1–8 with adaptive verification, prefix cache and HTTP server. The CSF steps in
+the alternative path below do not apply here: nothing is encoded, and there is
+no `--load-format`.
 
 | | |
 |---|---|
 | Package | [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE) — 576.7 GB (537 GiB), 601 safetensors files (primary manifest `model.safetensors`, payloads under `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`) |
 | Image | `ghcr.io/tunamitom/mimo-pro-flare:74eabe8f` — digest `sha256:6b0fedd4d5ef04e62ea8ab36af96b5448ba5beb79f435103480759a0eae5111c` |
-| Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`74eabe8f`) |
+| Engine fork | [`tunamitom/flare-local-inference`](https://github.com/tunamitom/flare-local-inference), branch `mimo-pro` (`74eabe8f`) — the export recipe lives in the branch under `packaging/mimo-pro/` |
 
-### Option A — download the prepared package
+### Option 1 — build from source (preferred)
+
+Everything comes from one checkout of the `mimo-pro` branch: the export runs
+this branch's `ignition` tree, and the image compiles this branch's `helios`
+and `flare` trees. Hardware: eight RTX PRO 6000 Blackwell (sm_120, 96 GB) on
+PCIe, tensor parallel 8, no NVLink.
+
+```bash
+git clone -b mimo-pro https://github.com/tunamitom/flare-local-inference.git
+cd flare-local-inference
+packaging/mimo-pro/setup-venv.sh
+```
+
+`setup-venv.sh` runs `uv sync --frozen --extra prepare` (FlashInfer pinned at
+`344e4837` in `uv.lock`) and then applies the five b12x patches in `patches/`
+to the installed FlashInfer. The export fails, or silently prepares slower
+graphs, without them. Export environment: Rust, Python 3.12, CMake, Ninja,
+`protoc`, OpenSSL and Python headers, liburing, and the CUDA toolkit (`nvcc`,
+CUPTI). The image build is a plain `docker build` — the Dockerfile compiles
+`flare/` and `helios/` with `cargo --locked` inside the container, so only
+Docker is needed for that step.
+
+Download the source checkpoint (the same one the CSF path uses) and export:
+
+```bash
+hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD --local-dir MiMo-V2.6-Pro-MOPD
+
+prlimit --memlock=unlimited:unlimited env \
+  FLARE_MIMO_SWITCH_SPECULATION=1 \
+  CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+  packaging/mimo-pro/export.sh "$PWD/MiMo-V2.6-Pro-MOPD"
+```
+
+`export.sh` fixes every option: TP8, `--max-concurrency 64`,
+`--image-concurrency 4`, `--prefill-chunk-size 8192`, DFlash MTP with
+`--mtp-draft-tokens 7` and packed verification over 256 target rows
+(`--speculative-token-capacity 256`), `--expert-scale-compression csf`, and
+the recipe's A4/A16 prefill variants from 512 tokens.
+`FLARE_MIMO_SWITCH_SPECULATION=1` makes one-request rounds choose their
+verification width on device (the switch); the shipped package is exported
+with it. The export needs unlocked memory (`ulimit -l` unlimited), runs about
+an hour, and peaks at about 1.1 TB of disk (about 0.56 TB of package plus the
+package cache). The package lands in the Flare model cache under
+`models/<checkpoint-dir>/gb202-tp8-<date>/` beside the shared blobs — there is
+no `--output` flag.
+
+Build the serving image from the same checkout:
+
+```bash
+packaging/mimo-pro/build-image.sh            # local/flare:rt-mimo-pro-<commit>
+```
+
+A self-built package is signed with your own per-user development key; the
+first run prints that fingerprint and refuses until you accept it (or pass the
+two `--dangerously-*` flags with your own values).
+
+### Option 2 — download the prepared package
 
 ```bash
 pip install -U "huggingface_hub[cli]"
@@ -69,57 +125,47 @@ hf download mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE \
 `README.md`, `LICENSE`, `publisher.json`, `.gitattributes`). Keep the published
 layout intact: `model.safetensors` is the manifest, payloads live under
 `weights/tp8/rank-0..7/` and `deployments/gb202-tp8/`. Serve
-`MiMo-V2.6-Pro-MOPD-FLARE/model.safetensors`.
+`MiMo-V2.6-Pro-MOPD-FLARE/model.safetensors`. It is signed by the
+**development** key in `publisher.json`, and it needs the matching engine image
+(`:74eabe8f`) — the ABI changes between engine builds.
 
 If you would rather keep everything in the Hub cache, FLARE can resolve the
 same reference itself: `run mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE@gb202
 --filename model.safetensors --cache-dir /cache`. The trust flags below still
 apply.
 
-### Option B — build the package from source
-
-Build environment: Rust, Python 3.12, CMake, Ninja, `protoc`, OpenSSL and
-Python headers, liburing, plus the CUDA toolkit (`nvcc`, CUPTI).
-
-```bash
-git clone -b mimo-pro https://github.com/tunamitom/flare-local-inference.git
-cd flare-local-inference
-uv sync --locked --extra prepare --extra test
-cargo build --release --manifest-path flare/Cargo.toml
-```
-
-Then convert the checkpoint (the same one the CSF path downloads) into a
-signed runtime package. The `mimo-v2.6-pro-mopd` alias prepares text, images
-and DFlash draft widths 1–8 with adaptive verification (the shipped package
-sets seven); audio is not prepared.
-
-```bash
-hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD --local-dir MiMo-V2.6-Pro-MOPD
-
-.venv/bin/python -m ignition export mimo-v2.6-pro-mopd \
-  --gpus 0,1,2,3,4,5,6,7 \
-  --max-concurrency 64 --mtp-draft-tokens 7 --prefill-chunk-size 4096 \
-  --output /data/flare-runtime/mimo-pro-tp8-c64-dflash7.safetensors --verbose
-```
-
-Export needs the same 8 GPUs and writes the primary manifest plus its payload
-tree (`weights/`, `deployments/`) beside it (~537 GiB more on top of the source
-checkpoint). A self-built package
-is signed with your own per-user development key; the first run prints that
-fingerprint and refuses until you accept it (or pass the two `--dangerously-*`
-flags with your own values). Serve the primary either with
-`./flare/target/release/flare run …` or with the image below.
-
 ### Serve
+
+`serve.sh` in the branch runs the shipped flags (throughput scheduler, adaptive
+MTP verification with 7 draft tokens, checkpoint segment 256, KV cache sized
+from memory, a 64 GB RAM prefix cache plus a 160 GB staged disk tier) and
+passes `seccomp-io-uring.json`, which the disk tier needs because Docker's
+default seccomp profile blocks `io_uring`:
+
+```bash
+GPUS=0,1,2,3,4,5,6,7 \
+PUBLISHER_FINGERPRINT=<your key fingerprint> \
+PUBLISHER_NAMESPACE=<your namespace> \
+  packaging/mimo-pro/serve.sh IMAGE PACKAGE_DIR STATE_DIR PREFIX_CACHE_DIR 8000
+```
+
+`STATE_DIR` holds the publisher keys (`development-publisher.json` for a
+self-built package, `publisher.json` for the downloaded one) and the
+`trust.toml` that records acceptance. `healthcheck.sh` probes `/health`
+without curl, which the image does not have.
+
+Manual equivalent, if you would rather not use the script:
 
 ```bash
 docker run -d --name mimo-pro \
   --gpus all --network host \
   --user "$(id -u):$(id -g)" \
+  --security-opt seccomp=./flare-local-inference/packaging/mimo-pro/seccomp-io-uring.json \
   --ulimit memlock=-1:-1 --ulimit nofile=1048576:1048576 \
   -e CUDA_DEVICE_ORDER=PCI_BUS_ID \
   -v $PWD/MiMo-V2.6-Pro-MOPD-FLARE:/model:ro \
   -v $PWD/flare-state:/state \
+  -v $PWD/flare-prefix-cache:/prefix-cache \
   ghcr.io/tunamitom/mimo-pro-flare:74eabe8f \
   run /model/model.safetensors \
     --gpus 0,1,2,3,4,5,6,7 \
@@ -129,18 +175,20 @@ docker run -d --name mimo-pro \
     --min-checkpoint-segment 256 \
     --kv-cache-limit memory \
     --prefix-cache-memory 64G \
+    --prefix-cache-disk /prefix-cache \
+    --prefix-cache-disk-limit 160G \
+    --prefix-cache-disk-transport staged \
     --served-model-name mimo-pro \
     --publisher-keys /model/publisher.json \
     --trust-store /state/trust.toml \
-    --dangerously-approve-key 26f0c9bfe3121de285240d0f00369602eb9409e00c1f405ed161e06f57d593dd \
-    --dangerously-accept-publisher local-development \
+    --dangerously-approve-key <key fingerprint> \
+    --dangerously-accept-publisher <namespace> \
     --host 0.0.0.0 --port 8000
 ```
 
-The published package is signed by a **development** key (namespace
-`local-development`), not a production one — those two flags accept exactly
-that key, once, and record it in `/state/trust.toml`. Check the fingerprint
-against `publisher.json` in the repo before you accept it.
+The `--dangerously-*` flags accept exactly one key, once, and record it in
+`/state/trust.toml`. Check the fingerprint against `publisher.json` in the
+package before you accept it.
 
 ### Check
 
@@ -159,10 +207,9 @@ curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/
   `Permission denied` on `/state` or the package directory.
 - `--ulimit memlock=-1:-1` matters: the engine locks host memory for its
   caches and would otherwise fail to raise the limit.
-- `--prefix-cache-memory 64G` is the host-RAM tier and optional. Adding
-  `--prefix-cache-disk /prefix-cache --prefix-cache-disk-limit 160G` needs an
-  io_uring-enabled seccomp profile — Docker's default profile blocks
-  `io_uring_setup`, and the server dies at startup with it.
+- `--prefix-cache-memory 64G` is the host-RAM tier and optional. The
+  `--prefix-cache-disk` tier needs `seccomp-io-uring.json`; without it the
+  server dies at startup when it cannot open `io_uring_setup`.
 - First start takes several minutes (537 GiB of weights off disk); `/health`
   returning 200 is the readiness signal, not the port opening.
 - `--max-concurrency 64` is what the published package was exported for; its
