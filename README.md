@@ -30,10 +30,12 @@ first one is the one to use:
    MXFP4 expert scales into the CSF container format and serve with the vLLM
    `mxfp4_csf` loader. Kept below for reproducibility and for the CSF toolkit.
 
-- Weights: [XiaomiMiMo/MiMo-V2.6-Pro-MOPD](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-MOPD) (public, ~534 GiB, includes the `dflash/` draft model)
+Artifacts:
+
+- Weights: [XiaomiMiMo/MiMo-V2.6-Pro-MOPD](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-MOPD) (public, ~534 GiB, includes the `dflash/` draft model) — see [Download the weights](#download-the-weights)
 - FLARE package: [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE)
   and image `ghcr.io/tunamitom/mimo-pro-flare` — see
-  [FLARE runtime](#recommended-flare-runtime) below
+  [FLARE runtime](#recommended-flare-runtime)
 - vLLM serving image: `ghcr.io/tunamitom/kk-mimo-pro` — vLLM with the MiMo
   MXFP4-CSF loader
 
@@ -43,6 +45,37 @@ first one is the one to use:
 - Docker + NVIDIA Container Toolkit
 - Disk: **~537 GiB** for the FLARE package, or ~550 GiB of base weights plus
   ~550 GiB more for the CSF container on the vLLM path
+
+## Download the weights
+
+The source checkpoint both paths start from. Only the FLARE path can skip it
+when you take the prepared package (Option 2 below).
+
+```bash
+pip install -U "huggingface_hub[cli]"
+hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD \
+  --revision adea8e2c5373181e5a973fa1ecb343cb31af214b \
+  --local-dir MiMo-V2.6-Pro-MOPD
+```
+
+Use that pinned revision — the build script records it for byte-exact
+rebuilds. The repo already contains `dflash/` (the speculative draft model),
+so there is nothing else to fetch.
+
+The CSF build also wants the download manifest (per-file LFS SHA-256s) for its
+fail-closed receipt checks — generate it from the same revision you downloaded:
+
+```bash
+python3 - <<'PY'
+import json, urllib.request
+repo, rev = "XiaomiMiMo/MiMo-V2.6-Pro-MOPD", "adea8e2c5373181e5a973fa1ecb343cb31af214b"
+tree = json.load(urllib.request.urlopen(
+    f"https://huggingface.co/api/models/{repo}/tree/{rev}?recursive=true", timeout=120))
+manifest = {f["path"]: {"lfs_oid": (f.get("lfs") or {}).get("oid"), "size": f["size"]} for f in tree}
+json.dump(manifest, open("source-manifest.json", "w"))
+print("manifest entries:", len(manifest))
+PY
+```
 
 ## Recommended: FLARE runtime
 
@@ -119,11 +152,10 @@ CUPTI). The image build is a plain `docker build` — the Dockerfile compiles
 `flare/` and `helios/` with `cargo --locked` inside the container, so only
 Docker is needed for that step.
 
-Download the source checkpoint (the same one the CSF path uses) and export:
+With the source checkpoint from [Download the weights](#download-the-weights),
+export:
 
 ```bash
-hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD --local-dir MiMo-V2.6-Pro-MOPD
-
 prlimit --memlock=unlimited:unlimited env \
   FLARE_MIMO_SWITCH_SPECULATION=1 \
   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
@@ -312,46 +344,11 @@ image ships both.
 Run **MiMo-V2.6-Pro** on 8 GPUs with vLLM, using compressed **MXFP4-CSF**
 weights. This repo contains the run recipe and the toolkit that encodes the
 model's MXFP4 expert scales into the CSF container format the vLLM
-`mxfp4_csf` loader expects.
+`mxfp4_csf` loader expects. You need the source checkpoint from
+[Download the weights](#download-the-weights) and the serving image
+`ghcr.io/tunamitom/kk-mimo-pro`.
 
-- Weights: [XiaomiMiMo/MiMo-V2.6-Pro-MOPD](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-MOPD) (public, ~534 GiB, includes the `dflash/` draft model)
-- Serving image: `ghcr.io/tunamitom/kk-mimo-pro` — vLLM with the MiMo MXFP4-CSF loader
-- FLARE runtime (no CSF container, no vLLM): prepared package
-  [mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE](https://huggingface.co/mitomtuna/MiMo-V2.6-Pro-MOPD-FLARE)
-  and image `ghcr.io/tunamitom/mimo-pro-flare` — see
-  [FLARE runtime](#flare-runtime) below
-
-### 1. Download the weights
-
-```bash
-pip install -U "huggingface_hub[cli]"
-hf download XiaomiMiMo/MiMo-V2.6-Pro-MOPD \
-  --revision adea8e2c5373181e5a973fa1ecb343cb31af214b \
-  --local-dir MiMo-V2.6-Pro-MOPD
-```
-
-Use that pinned revision — the build script records it for byte-exact
-rebuilds. The repo already contains `dflash/` (the speculative draft model),
-so there is nothing else to fetch.
-
-Also write the download manifest (per-file LFS SHA-256s) that the build step
-uses for its fail-closed receipt checks:
-
-```bash
-python3 - <<'PY'
-import json, urllib.request
-repo, rev = "XiaomiMiMo/MiMo-V2.6-Pro-MOPD", "adea8e2c5373181e5a973fa1ecb343cb31af214b"
-tree = json.load(urllib.request.urlopen(
-    f"https://huggingface.co/api/models/{repo}/tree/{rev}?recursive=true", timeout=120))
-manifest = {f["path"]: {"lfs_oid": (f.get("lfs") or {}).get("oid"), "size": f["size"]} for f in tree}
-json.dump(manifest, open("source-manifest.json", "w"))
-print("manifest entries:", len(manifest))
-PY
-```
-
-(Generate it from the same revision you downloaded.)
-
-### 2. Encode the CSF container
+### 1. Encode the CSF container
 
 The runtime does not read the MXFP4 expert `weight_scale` tensors directly —
 it expects them recoded as CSF planes: `<name>.mxfp4_csf_fixed` (U8) plus
@@ -383,7 +380,7 @@ docker run --rm \
 `verify` is fail-closed and writes `verification.json` into the container.
 The build is memory-bounded (one tensor in flight per worker).
 
-### 3. Serve on 8 GPUs
+### 2. Serve on 8 GPUs
 
 ```bash
 docker run -d --name mimo-pro \
@@ -421,7 +418,7 @@ Notes:
 - `--load-format mxfp4_csf` reads the main weights from `/model` and the
   recoded expert scales from the `/container` CSF store.
 
-### 4. Test
+### 3. Test
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{
@@ -437,7 +434,7 @@ chat completion is the signal it's ready.
 
 - `mxfp4_csf.py` — the MXFP4-CSF codec (`row-base-offset1-u24-exceptions/1`).
 - `build_mimo_csf.py` — build + fail-closed verify of the CSF container
-  (step 2 above).
+  (step 1 above).
 - `migrate_suffix_v2.py` — header-only container migration (writer v1 → v2
   lookup names).
 - `scan_mimo_mxfp4.py` — source-checkpoint MXFP4 tensor scan.
